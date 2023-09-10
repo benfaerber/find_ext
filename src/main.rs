@@ -1,7 +1,7 @@
 use std::env;
 use std::collections::HashMap;
-use std::panic;
 use std::fs;
+use std::io;
 use walkdir::WalkDir;
 use lazy_static::lazy_static;
 use serde::{Serialize, Deserialize};
@@ -11,6 +11,7 @@ const DEFAULT_MAX_DEPTH: usize = 4;
 const SEARCH_EXTENSIONS_ENV: &'static str = "FIND_EXT_SEARCH_EXTENSIONS";
 const DISALLOWED_FOLDER_ENV: &'static str = "FIND_EXT_DISALLOWED_FOLDERS";
 const CACHE_FILE_ENV: &'static str = "FIND_EXT_CACHE_FILE";
+const USE_CACHE_ENV: &'static str = "FIND_EXT_USE_CACHE";
 
 fn env(key: &str) -> String {
     env::var(key)
@@ -28,6 +29,7 @@ lazy_static! {
     static ref LOOK_FOR: Vec<String> = env_as_vec(SEARCH_EXTENSIONS_ENV);
     static ref DISALLOWED_FOLDERS: Vec<String> = env_as_vec(DISALLOWED_FOLDER_ENV);
     static ref CACHE_FILE: String = env(CACHE_FILE_ENV);
+    static ref USE_CACHE: bool = env(USE_CACHE_ENV) == "true";
 }
 
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
@@ -36,13 +38,13 @@ struct CacheItem {
     extension: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
 struct Cache {
     folders: Vec<CacheItem>, 
 }
 
 impl Cache {
-    fn load() -> anyhow::Result<Self> {
+    fn load() -> io::Result<Self> {
         let raw = fs::read_to_string(CACHE_FILE.to_string())?;
         Ok(serde_json::from_str::<Self>(&raw)?)
     }
@@ -66,9 +68,11 @@ impl Cache {
     }
 }
 
-fn find_extension(path: String, depth: usize, look_for: Vec<String>, cache: Cache) -> Option<String> {
-    if let Some(CacheItem { extension, .. }) = cache.folders.iter().find(|item| item.path == path) {
-        return Some(extension.to_string());
+fn find_extension(path: String, depth: usize, look_for: Vec<String>, cache_opt: Option<Cache>) -> Option<String> {
+    if let Some(cache) = cache_opt.clone() {
+        if let Some(CacheItem { extension, .. }) = cache.folders.iter().find(|item| item.path == path) {
+            return Some(extension.to_string());
+        }
     }
 
     let cache_key = path.clone();
@@ -105,7 +109,9 @@ fn find_extension(path: String, depth: usize, look_for: Vec<String>, cache: Cach
         .unwrap_or(("".into(), 0));
     
     if ext != "" {
-        cache.add(&cache_key, &ext).save();
+        if let Some(cache) = cache_opt {
+            cache.add(&cache_key, &ext).save();
+        }
         Some(ext) 
     } else {
         None
@@ -113,10 +119,11 @@ fn find_extension(path: String, depth: usize, look_for: Vec<String>, cache: Cach
 }
 
 fn main() {
-    // Ignore all failures
-    panic::set_hook(Box::new(|_| {}));
-    
-    let cache = Cache::load().unwrap_or(Cache::default());
+    let cache = if *USE_CACHE {
+        Some(Cache::load().unwrap_or(Cache::default()))
+    } else {
+        None
+    };
     let args: Vec<String> = env::args().collect();
     let path = args.get(1);
     let depth = args.get(2)
