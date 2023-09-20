@@ -1,5 +1,5 @@
 use std::env;
-use std::collections::HashMap;
+use std::collections::HashMap as Map;
 use std::fs;
 use std::io;
 use walkdir::WalkDir;
@@ -30,14 +30,16 @@ lazy_static! {
     static ref USE_CACHE: bool = env(USE_CACHE_ENV) == "true";
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 struct CacheItem {
     path: String,
     extension: String,
 }
 
-#[derive(Debug, Default, Clone)]
-struct Cache(Vec<CacheItem>);
+#[derive(Debug, Default)]
+struct Cache {
+    folders: Vec<CacheItem>
+}
 
 impl Cache {
     fn load() -> io::Result<Self> {
@@ -53,7 +55,7 @@ impl Cache {
             }
         }).collect();
 
-        Ok(Cache(folders))
+        Ok(Cache { folders })
     }
 
     fn load_or_new() -> Self {
@@ -61,8 +63,7 @@ impl Cache {
     }
 
     fn save(&self) {
-        let Cache(folders) = self;
-        let raw_data = folders 
+        let raw_data = self.folders 
             .iter()
             .map(|CacheItem { path, extension }| format!("{path};{extension}")) 
             .collect::<Vec<String>>()
@@ -78,25 +79,25 @@ impl Cache {
             extension: extension.into(),
         };
         
-        self.0.push(item);
+        self.folders.push(item);
         self
     }
 }
 
 fn find_extension(path: &str, depth: usize, look_for: &Vec<String>, cache_opt: &mut Option<Cache>) -> Option<String> {
     if let Some(cache) = cache_opt {
-        if let Some(CacheItem { extension, .. }) = cache.0.iter().find(|item| item.path == path) {
+        let found = cache.folders.iter().find(|item| item.path == path);
+        if let Some(CacheItem { extension, .. }) = found  {
             return Some(extension.to_string());
         }
     }
 
-    let cache_key = path.clone();
-    let exts: Vec<String> = WalkDir::new(path)
+    let exts: Vec<String> = WalkDir::new(&path)
         .max_depth(depth)
         .into_iter()
         .filter_map(|p| {
             let path = p.unwrap().path().to_string_lossy().to_string();
-                    
+            
             if (*DISALLOWED_FOLDERS).iter().any(|disallowed| path.contains(disallowed)) {
                 return None
             } 
@@ -105,12 +106,12 @@ fn find_extension(path: &str, depth: usize, look_for: &Vec<String>, cache_opt: &
                 path.split(".")
                     .last()
                     .unwrap_or("")
-                    .to_string()
+                    .into()
             )
         })
         .collect();
 
-    let mut counts: HashMap<String, u16> = HashMap::new();
+    let mut counts: Map<String, u16> = Map::new();
     for ext in exts {
         if !look_for.contains(&ext) {
             continue;
@@ -119,13 +120,13 @@ fn find_extension(path: &str, depth: usize, look_for: &Vec<String>, cache_opt: &
         counts.insert(ext, *last + 1);
     }
     
-    let (ext, _) = counts.into_iter()
+    let max_ext = counts.into_iter()
         .max_by(|(_, v1), (_, v2)| v1.cmp(v2))
-        .unwrap_or(("".into(), 0));
+        .map(|(ext, _)| ext);
     
-    if ext != "" {
+    if let Some(ext) = max_ext {
         if let Some(cache) = cache_opt {
-            cache.add(&cache_key, &ext).save();
+            cache.add(&path, &ext).save();
         }
         Some(ext) 
     } else {
@@ -144,7 +145,7 @@ fn main() {
         .unwrap_or(DEFAULT_MAX_DEPTH);
     
     let output: Option<String> = path
-        .and_then(|path: &String| {
+        .and_then(|path| {
             let mut find_depth = |depth: usize| find_extension(path, depth, &*LOOK_FOR, &mut cache); 
             let attempt = find_depth(depth); 
             if let None = attempt {
