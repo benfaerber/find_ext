@@ -4,8 +4,6 @@ use std::fs;
 use std::io;
 use walkdir::WalkDir;
 use lazy_static::lazy_static;
-use serde::{Serialize, Deserialize};
-use serde_json;
 
 const DEFAULT_MAX_DEPTH: usize = 4;
 const SEARCH_EXTENSIONS_ENV: &'static str = "FIND_EXT_SEARCH_EXTENSIONS";
@@ -15,7 +13,7 @@ const USE_CACHE_ENV: &'static str = "FIND_EXT_USE_CACHE";
 
 fn env(key: &str) -> String {
     env::var(key)
-        .expect(&format!("Find Ext: set the enviroment variable {}", key))
+        .expect(&format!("Find Ext: set the enviroment variable '{key}'"))
 }
 
 fn env_as_vec(key: &str) -> Vec<String> {
@@ -32,45 +30,62 @@ lazy_static! {
     static ref USE_CACHE: bool = env(USE_CACHE_ENV) == "true";
 }
 
-#[derive(Debug, Deserialize, Serialize, Default, Clone)]
+#[derive(Debug, Default, Clone)]
 struct CacheItem {
     path: String,
     extension: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default, Clone)]
-struct Cache {
-    folders: Vec<CacheItem>, 
-}
+#[derive(Debug, Default, Clone)]
+struct Cache(Vec<CacheItem>);
 
 impl Cache {
     fn load() -> io::Result<Self> {
         let raw = fs::read_to_string(CACHE_FILE.to_string())?;
-        Ok(serde_json::from_str::<Self>(&raw)?)
+    
+        let lines = raw.trim().split("\n");
+        let folders = lines.map(|entry| {
+            let mut pair = entry.split(";");
+            let mut next = || pair.next().expect("Invalid Cache").to_string();
+            CacheItem {
+                path: next(), 
+                extension: next(), 
+            }
+        }).collect();
+
+        Ok(Cache(folders))
+    }
+
+    fn load_or_new() -> Self {
+        Self::load().unwrap_or(Self::default())
     }
 
     fn save(&self) {
-        let raw_data = serde_json::to_string_pretty(self).expect("Failed to serialize cache");
-        fs::write(&*CACHE_FILE, raw_data).expect("Failed to save Cache!");
+        let Cache(folders) = self;
+        let raw_data = folders 
+            .iter()
+            .map(|CacheItem { path, extension }| format!("{path};{extension}")) 
+            .collect::<Vec<String>>()
+            .join("\n");
+        
+        fs::write(&*CACHE_FILE, raw_data)
+            .expect("Failed to save Cache!");
     }
 
-    fn add(&self, path: &str, ext: &str) -> Self { 
+    fn add(&mut self, path: &str, extension: &str) -> &mut Self {
         let item = CacheItem {
             path: path.into(),
-            extension: ext.into(),
+            extension: extension.into(),
         };
-
-        let folders = [
-            self.folders.clone(),
-            vec![item]
-        ].concat();
-        Self { folders } 
+        
+        self.0.push(item);
+        self
     }
 }
 
-fn find_extension(path: String, depth: usize, look_for: Vec<String>, cache_opt: Option<Cache>) -> Option<String> {
-    if let Some(cache) = cache_opt.clone() {
-        if let Some(CacheItem { extension, .. }) = cache.folders.iter().find(|item| item.path == path) {
+fn find_extension(path: &str, depth: usize, look_for: &Vec<String>, cache_opt: &mut Option<Cache>) -> Option<String> {
+    if let Some(cache) = cache_opt {
+        if let Some(CacheItem { extension, .. }) = cache.0.iter().find(|item| item.path == path) {
             return Some(extension.to_string());
         }
     }
@@ -119,19 +134,25 @@ fn find_extension(path: String, depth: usize, look_for: Vec<String>, cache_opt: 
 }
 
 fn main() {
-    let cache = if *USE_CACHE {
-        Some(Cache::load().unwrap_or(Cache::default()))
-    } else {
-        None
-    };
+    let mut cache = (*USE_CACHE)
+        .then_some(Cache::load_or_new());
+
     let args: Vec<String> = env::args().collect();
     let path = args.get(1);
     let depth = args.get(2)
-        .map(|t| t.parse::<usize>().unwrap_or(DEFAULT_MAX_DEPTH))
+        .and_then(|t| t.parse::<usize>().ok())
         .unwrap_or(DEFAULT_MAX_DEPTH);
     
     let output: Option<String> = path
-        .and_then(|path: &String| find_extension(path.into(), depth, LOOK_FOR.clone(), cache));
+        .and_then(|path: &String| {
+            let mut find_depth = |depth: usize| find_extension(path, depth, &*LOOK_FOR, &mut cache); 
+            let attempt = find_depth(depth); 
+            if let None = attempt {
+                find_depth(depth+2) 
+            } else {
+                attempt
+            }
+        });
 
     println!("{}", output.unwrap_or("".to_string()));
 }
