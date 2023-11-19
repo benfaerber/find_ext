@@ -38,22 +38,20 @@ struct CacheItem {
 
 #[derive(Debug, Default)]
 struct Cache {
-    folders: Vec<CacheItem>
+    folders: Map<String, String>
 }
 
 impl Cache {
     fn load() -> io::Result<Self> {
         let raw = fs::read_to_string(CACHE_FILE.to_string())?;
-    
+        
+        let mut folders: Map<String, String> = Map::new();
         let lines = raw.trim().split("\n");
-        let folders = lines.map(|entry| {
-            let mut pair = entry.split(";");
+        for line in lines {
+            let mut pair = line.split(";");
             let mut next = || pair.next().expect("Invalid Cache").to_string();
-            CacheItem {
-                path: next(), 
-                extension: next(), 
-            }
-        }).collect();
+            folders.insert(next(), next());
+        }
 
         Ok(Cache { folders })
     }
@@ -63,9 +61,9 @@ impl Cache {
     }
 
     fn save(&self) {
-        let raw_data = self.folders 
+        let raw_data = &self.folders 
             .iter()
-            .map(|CacheItem { path, extension }| format!("{path};{extension}")) 
+            .map(|(path, extension)| format!("{path};{extension}")) 
             .collect::<Vec<String>>()
             .join("\n");
         
@@ -74,21 +72,15 @@ impl Cache {
     }
 
     fn add(&mut self, path: &str, extension: &str) -> &mut Self {
-        let item = CacheItem {
-            path: path.into(),
-            extension: extension.into(),
-        };
-        
-        self.folders.push(item);
+        self.folders.insert(path.into(), extension.into());
         self
     }
 }
 
 fn find_extension(path: &str, depth: usize, look_for: &Vec<String>, cache_opt: &mut Option<Cache>) -> Option<String> {
     if let Some(cache) = cache_opt {
-        let found = cache.folders.iter().find(|item| item.path == path);
-        if let Some(CacheItem { extension, .. }) = found  {
-            return Some(extension.to_string());
+        if let Some(ext) = &cache.folders.get(path) {
+            return Some((*ext).clone());
         }
     }
 
@@ -96,6 +88,10 @@ fn find_extension(path: &str, depth: usize, look_for: &Vec<String>, cache_opt: &
         .max_depth(depth)
         .into_iter()
         .filter_map(|p| {
+            if let Err(_) = p {
+                return None
+            }
+
             let path = p.unwrap().path().to_string_lossy().to_string();
             
             if (*DISALLOWED_FOLDERS).iter().any(|disallowed| path.contains(disallowed)) {
@@ -146,14 +142,13 @@ fn main() {
     
     let output: Option<String> = path
         .and_then(|path| {
-            let mut find_depth = |depth: usize| find_extension(path, depth, &*LOOK_FOR, &mut cache); 
-            let attempt = find_depth(depth); 
+            let attempt = find_extension(path, depth, &*LOOK_FOR, &mut cache); 
             if let None = attempt {
-                find_depth(depth+2) 
+                find_extension(path, depth, &*LOOK_FOR, &mut cache)
             } else {
                 attempt
             }
         });
 
-    println!("{}", output.unwrap_or("".to_string()));
+    println!("{}", output.unwrap_or_default());
 }
