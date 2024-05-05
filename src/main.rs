@@ -135,20 +135,17 @@ fn main() {
         .then_some(Cache::load_or_new());
 
     let args: Vec<String> = env::args().collect();
-    let path = args.get(1);
+    let path = args.get(1).expect("Find Ext: find_ext <PATH>");
     let depth = args.get(2)
         .and_then(|t| t.parse::<usize>().ok())
         .unwrap_or(DEFAULT_MAX_DEPTH);
     
-    let output: Option<String> = path
-        .and_then(|path| {
-            let attempt = find_extension(path, depth, &*LOOK_FOR, &mut cache); 
-            if let None = attempt {
-                find_extension(path, depth, &*LOOK_FOR, &mut cache)
-            } else {
-                attempt
-            }
-        });
+    let attempt = find_extension(path, depth, &*LOOK_FOR, &mut cache); 
+    let output = if let None = attempt {
+        find_extension(path, depth, &*LOOK_FOR, &mut cache)
+    } else {
+        attempt
+    };
 
     println!("{}", output.unwrap_or_default());
 }
