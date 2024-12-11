@@ -2,6 +2,7 @@ use std::env;
 use std::collections::HashMap as Map;
 use std::fs;
 use std::io;
+use std::process::exit;
 use walkdir::WalkDir;
 use lazy_static::lazy_static;
 
@@ -71,6 +72,10 @@ impl Cache {
             .expect("Failed to save Cache!");
     }
 
+    fn clear() {
+        fs::remove_file(&*CACHE_FILE).unwrap();
+    }
+
     fn add(&mut self, path: &str, extension: &str) -> &mut Self {
         self.folders.insert(path.into(), extension.into());
         self
@@ -130,16 +135,37 @@ fn find_extension(path: &str, depth: usize, look_for: &Vec<String>, cache_opt: &
     } 
 }
 
+fn display_help_message() {
+    let msg = r#"
+Usage: find_ext PATH
+    --clear (-c) = Clear cache 
+    "#.trim();
+    println!("{msg}");
+}
+
+
 fn main() {
     let mut cache = (*USE_CACHE)
         .then_some(Cache::load_or_new());
 
     let args: Vec<String> = env::args().collect();
-    let path = args.get(1).expect("Find Ext: find_ext <PATH>");
+    let path = match args.get(1) {
+        Some(p) if p == "-c" || p == "--clear" => {
+            Cache::clear();
+            println!("Cleared cache!"); 
+            return;
+        }, 
+        Some(p) => p,
+        None => {
+            display_help_message();
+            exit(1);
+        }
+    };
+
     let depth = args.get(2)
         .and_then(|t| t.parse::<usize>().ok())
         .unwrap_or(DEFAULT_MAX_DEPTH);
-    
+   
     let attempt = find_extension(path, depth, &*LOOK_FOR, &mut cache); 
     let output = if let None = attempt {
         find_extension(path, depth, &*LOOK_FOR, &mut cache)
