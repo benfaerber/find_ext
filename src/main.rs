@@ -20,7 +20,7 @@ fn env(key: &str) -> String {
 fn env_as_vec(key: &str) -> Vec<String> {
     env(key) 
         .split(',')
-        .map(|k| k.to_string())
+        .map(str::to_string) 
         .collect()
 }
 
@@ -28,13 +28,7 @@ lazy_static! {
     static ref LOOK_FOR: Vec<String> = env_as_vec(SEARCH_EXTENSIONS_ENV);
     static ref DISALLOWED_FOLDERS: Vec<String> = env_as_vec(DISALLOWED_FOLDER_ENV);
     static ref CACHE_FILE: String = env(CACHE_FILE_ENV);
-    static ref USE_CACHE: bool = env(USE_CACHE_ENV) == "true";
-}
-
-#[derive(Debug, Default)]
-struct CacheItem {
-    path: String,
-    extension: String,
+    static ref USE_CACHE: bool = env(USE_CACHE_ENV).parse().unwrap_or(false); 
 }
 
 #[derive(Debug, Default)]
