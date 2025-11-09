@@ -1,30 +1,55 @@
 use lazy_static::lazy_static;
-use std::collections::HashMap as Map;
+use std::collections::{HashMap as Map, HashSet};
 use std::env;
 use std::fs;
 use std::io;
 use std::process::exit;
 use walkdir::WalkDir;
 
-const DEFAULT_MAX_DEPTH: usize = 4;
+const DEFAULT_MAX_DEPTH: usize = 2;
+const DEFAULT_CONFIDENCE_THRESHOLD: u32 = 5; // Stop after finding this many files of same type
 const SEARCH_EXTENSIONS_ENV: &'static str = "FIND_EXT_SEARCH_EXTENSIONS";
 const DISALLOWED_FOLDER_ENV: &'static str = "FIND_EXT_DISALLOWED_FOLDERS";
 const CACHE_FILE_ENV: &'static str = "FIND_EXT_CACHE_FILE";
 const USE_CACHE_ENV: &'static str = "FIND_EXT_USE_CACHE";
+const CONFIDENCE_THRESHOLD_ENV: &'static str = "FIND_EXT_CONFIDENCE_THRESHOLD";
 
 fn env(key: &str) -> String {
     env::var(key).expect(&format!("Find Ext: set the enviroment variable '{key}'"))
 }
 
-fn env_as_vec(key: &str) -> Vec<String> {
+fn env_as_set(key: &str) -> HashSet<String> {
     env(key).split(',').map(str::to_string).collect()
 }
 
 lazy_static! {
-    static ref LOOK_FOR: Vec<String> = env_as_vec(SEARCH_EXTENSIONS_ENV);
-    static ref DISALLOWED_FOLDERS: Vec<String> = env_as_vec(DISALLOWED_FOLDER_ENV);
+    static ref LOOK_FOR: HashSet<String> = env_as_set(SEARCH_EXTENSIONS_ENV);
+    static ref DISALLOWED_FOLDERS: HashSet<String> = env_as_set(DISALLOWED_FOLDER_ENV);
     static ref CACHE_FILE: String = env(CACHE_FILE_ENV);
     static ref USE_CACHE: bool = env(USE_CACHE_ENV).parse().unwrap_or(false);
+}
+
+// Fast marker file detection - check these before walking
+fn check_marker_files(path: &str) -> Option<String> {
+    let markers = [
+        ("package.json", "js"),
+        ("Cargo.toml", "rs"),
+        ("requirements.txt", "py"),
+        ("setup.py", "py"),
+        ("go.mod", "go"),
+        ("composer.json", "php"),
+        ("build.gradle", "kt"),
+        ("pom.xml", "java"),
+        ("Gemfile", "rb"),
+    ];
+
+    for (file, ext) in &markers {
+        let marker_path = format!("{}/{}", path, file);
+        if fs::metadata(&marker_path).is_ok() {
+            return Some(ext.to_string());
+        }
+    }
+    None
 }
 
 #[derive(Debug, Default)]
@@ -75,58 +100,81 @@ impl Cache {
 fn find_extension(
     path: &str,
     depth: usize,
-    look_for: &Vec<String>,
+    look_for: &HashSet<String>,
     cache_opt: &mut Option<Cache>,
+    confidence_threshold: u32,
 ) -> Option<String> {
+    // 1. Check cache first (fastest)
     if let Some(cache) = cache_opt {
-        if let Some(ext) = &cache.folders.get(path) {
-            return Some((*ext).clone());
+        if let Some(ext) = cache.folders.get(path) {
+            return Some(ext.to_string());
         }
     }
 
-    let exts: Vec<String> = WalkDir::new(&path)
+    // 2. Check for marker files (very fast, no recursion)
+    if let Some(marker_ext) = check_marker_files(path) {
+        if look_for.contains(&marker_ext) {
+            if let Some(cache) = cache_opt {
+                cache.add(path, &marker_ext);
+            }
+            return Some(marker_ext);
+        }
+    }
+
+    // 3. Walk directory with early exit on confidence threshold
+    let mut counts: Map<String, u32> = Map::new();
+    let mut max_count = 0u32;
+    let mut leading_ext: Option<String> = None;
+
+    for entry in WalkDir::new(&path)
         .max_depth(depth)
         .into_iter()
-        .filter_map(|p| {
-            if let Err(_) = p {
-                return None;
-            }
-
-            let path = p.unwrap().path().to_string_lossy().to_string();
-
-            if (*DISALLOWED_FOLDERS)
-                .iter()
-                .any(|disallowed| path.contains(disallowed))
-            {
-                return None;
-            }
-
-            Some(path.split(".").last().unwrap_or("").into())
+        .filter_entry(|e| {
+            // Skip disallowed folders during walk, not after
+            !DISALLOWED_FOLDERS.iter().any(|disallowed| {
+                e.path().to_string_lossy().contains(disallowed)
+            })
         })
-        .collect();
+        .filter_map(|e| e.ok())
+    {
+        if let Some(ext) = entry.path()
+            .extension()
+            .and_then(|ext| ext.to_str())
+        {
+            if look_for.contains(ext) {
+                let count = counts.entry(ext.to_string()).or_insert(0);
+                *count += 1;
 
-    let mut counts: Map<String, u16> = Map::new();
-    for ext in exts {
-        if !look_for.contains(&ext) {
-            continue;
+                if *count > max_count {
+                    max_count = *count;
+                    leading_ext = Some(ext.to_string());
+                }
+
+                // Early exit: if we found enough files of one type, stop searching
+                if max_count >= confidence_threshold {
+                    break;
+                }
+            }
         }
-        let last = counts.get(&ext).unwrap_or(&0);
-        counts.insert(ext, *last + 1);
     }
 
-    let max_ext = counts
-        .into_iter()
-        .max_by(|(_, v1), (_, v2)| v1.cmp(v2))
-        .map(|(ext, _)| ext);
-
-    if let Some(ext) = max_ext {
-        if let Some(cache) = cache_opt {
-            cache.add(&path, &ext).save();
-        }
-        Some(ext)
+    let max_ext = if max_count >= confidence_threshold {
+        leading_ext
     } else {
-        None
+        // If we didn't hit threshold, get the actual max
+        counts
+            .into_iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(ext, _)| ext)
+    };
+
+    if let Some(ext) = &max_ext {
+        if let Some(cache) = cache_opt {
+            cache.add(path, ext);
+        }
     }
+
+    max_ext
 }
 
 fn display_help_message() {
@@ -160,12 +208,17 @@ fn main() {
         .and_then(|t| t.parse::<usize>().ok())
         .unwrap_or(DEFAULT_MAX_DEPTH);
 
-    let attempt = find_extension(path, depth, &*LOOK_FOR, &mut cache);
-    let output = if let None = attempt {
-        find_extension(path, depth, &*LOOK_FOR, &mut cache)
-    } else {
-        attempt
-    };
+    let confidence_threshold = env::var(CONFIDENCE_THRESHOLD_ENV)
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(DEFAULT_CONFIDENCE_THRESHOLD);
+
+    let output = find_extension(path, depth, &*LOOK_FOR, &mut cache, confidence_threshold);
+
+    // Save cache once at the end if we have one
+    if let Some(c) = cache {
+        c.save();
+    }
 
     println!("{}", output.unwrap_or_default());
 }

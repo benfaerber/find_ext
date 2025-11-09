@@ -8,3 +8,9 @@ edition = "2021"
 [dependencies]
 lazy_static = "1.4.0"
 walkdir = "2.3.3"
+
+[profile.release]
+opt-level = 3
+lto = true           # Link-time optimization
+codegen-units = 1    # Better optimization, slower compile
+strip = true         # Remove debug symbols for smaller binary
