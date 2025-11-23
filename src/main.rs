@@ -104,14 +104,12 @@ fn find_extension(
     cache_opt: &mut Option<Cache>,
     confidence_threshold: u32,
 ) -> Option<String> {
-    // 1. Check cache first (fastest)
     if let Some(cache) = cache_opt {
         if let Some(ext) = cache.folders.get(path) {
             return Some(ext.to_string());
         }
     }
 
-    // 2. Check for marker files (very fast, no recursion)
     if let Some(marker_ext) = check_marker_files(path) {
         if look_for.contains(&marker_ext) {
             if let Some(cache) = cache_opt {
@@ -121,7 +119,6 @@ fn find_extension(
         }
     }
 
-    // 3. Walk directory with early exit on confidence threshold
     let mut counts: Map<String, u32> = Map::new();
     let mut max_count = 0u32;
     let mut leading_ext: Option<String> = None;
@@ -130,17 +127,13 @@ fn find_extension(
         .max_depth(depth)
         .into_iter()
         .filter_entry(|e| {
-            // Skip disallowed folders during walk, not after
-            !DISALLOWED_FOLDERS.iter().any(|disallowed| {
-                e.path().to_string_lossy().contains(disallowed)
-            })
+            !DISALLOWED_FOLDERS
+                .iter()
+                .any(|disallowed| e.path().to_string_lossy().contains(disallowed))
         })
         .filter_map(|e| e.ok())
     {
-        if let Some(ext) = entry.path()
-            .extension()
-            .and_then(|ext| ext.to_str())
-        {
+        if let Some(ext) = entry.path().extension().and_then(|ext| ext.to_str()) {
             if look_for.contains(ext) {
                 let count = counts.entry(ext.to_string()).or_insert(0);
                 *count += 1;
@@ -161,7 +154,6 @@ fn find_extension(
     let max_ext = if max_count >= confidence_threshold {
         leading_ext
     } else {
-        // If we didn't hit threshold, get the actual max
         counts
             .into_iter()
             .max_by_key(|(_, count)| *count)
