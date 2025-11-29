@@ -1,5 +1,6 @@
 # find_ext_quick
 Quickly determine the most common file extension in a folder, used for a ZSH plugin.
+This allows for all sorts of cool features like generic "run" and "test" commands that work for any programming language. 
 
 ## Install:
 `cargo install --path .`
