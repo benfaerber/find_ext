@@ -29,7 +29,7 @@ lazy_static! {
     static ref USE_CACHE: bool = env(USE_CACHE_ENV).parse().unwrap_or(false);
 }
 
-// Fast marker file detection - check these before walking
+/// Fast marker file detection - check these before walking
 fn check_marker_files(path: &str) -> Option<String> {
     let markers = [
         ("package.json", "js"),
@@ -52,6 +52,7 @@ fn check_marker_files(path: &str) -> Option<String> {
     None
 }
 
+/// Cache impl to make it faster
 #[derive(Debug, Default)]
 struct Cache {
     folders: Map<String, String>,
@@ -143,7 +144,6 @@ fn find_extension(
                     leading_ext = Some(ext.to_string());
                 }
 
-                // Early exit: if we found enough files of one type, stop searching
                 if max_count >= confidence_threshold {
                     break;
                 }
